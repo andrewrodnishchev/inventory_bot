@@ -1,0 +1,903 @@
+import os
+import re
+import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from dotenv import load_dotenv
+from openpyxl import Workbook
+from openpyxl.styles import Font
+
+load_dotenv("token.env")
+
+bot_token = os.getenv("BOT_TOKEN")
+if bot_token is None:
+    raise ValueError("Токен бота не найден! Проверьте файл .env.")
+
+bot = Bot(token=bot_token)
+dp = Dispatcher()
+
+# Обновленные категории для бара
+CATEGORIES = [
+    "БАР - ПРОЧЕЕ товар",
+    "БЕЗАЛКОГОЛЬНЫЕ НАПИТКИ**",
+    "ЧАЙ/КОФЕ товар",
+    "КОНДИТЕРКА/ВЫПЕЧКА",
+    "КОНСЕРВАЦИЯ",
+    "СОУСЫ",
+    "СПЕЦИИ",
+    "СЫПУЧИЕ",
+    "ЧАЙ, КОФЕ",
+    "ЗЕЛЕНЬ",
+    "МОЛОЧНЫЕ ПРОДУКТЫ",
+    "ОВОЩИ СВЕЖИЕ",
+    "ФРУКТЫ",
+    "ЯГОДЫ С/М",
+    "НАПИТКИ БЛ ПФ"
+]
+
+conn = sqlite3.connect("inventory.db")
+cursor = conn.cursor()
+
+# Обновленная структура таблицы с единицами измерения
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS inventory (
+    user_id INTEGER,
+    category TEXT,
+    name TEXT,
+    unit TEXT,
+    quantity INTEGER
+)
+''')
+conn.commit()
+
+class InventoryState(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_item_data = State()
+
+@dp.message(F.text == "/start")
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    for category in CATEGORIES:
+        builder.button(text=category, callback_data=f"category_{category}")
+    builder.button(text="📊 Сформировать таблицу", callback_data="generate_excel")
+    builder.adjust(1)
+    await message.answer(
+        "Выберите категорию:",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("category_"))
+async def select_category(callback: types.CallbackQuery, state: FSMContext):
+    category = callback.data.split("_", 1)[1]
+    await state.update_data(category=category)
+    await state.set_state(InventoryState.waiting_for_item_data)
+    await callback.message.answer(
+        f"Категория: {category}\n"
+        "Введите данные в формате:\n"
+        "<Наименование> <Ед. изм.> <Количество>\n"
+        "Например: Лист бамбука л 5"
+    )
+
+@dp.message(InventoryState.waiting_for_item_data)
+async def process_item_data(message: types.Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        category = data["category"]
+        text = message.text.strip()
+
+        # Обновленное регулярное выражение
+        pattern = re.compile(
+            r"""
+            ^
+            (?P<name>[^\d]+?)                # Название (не содержит цифр)
+            \s*                               # Пробелы между названием и единицей измерения
+            (?P<unit>\D+?)                   # Единица измерения
+            \s*                               # Пробелы между единицей измерения и количеством
+            (?P<quantity>\d+)                # Количество
+            $
+            """,
+            re.VERBOSE | re.IGNORECASE
+        )
+
+        match = pattern.match(text)
+        if not match:
+            raise ValueError("Неверный формат данных")
+
+        # Извлечение данных
+        name = match.group("name").strip()
+        unit = match.group("unit").strip()
+        quantity = match.group("quantity")
+
+        # Нормализация единиц измерения
+        unit_aliases = {
+            'гр': ['гр', 'грамм', 'g', 'грамма'],
+            'кг': ['кг', 'килограмм', 'kg'],
+            'л': ['л', 'литр', 'l'],
+            'шт': ['шт', 'штук', 'pcs']
+        }
+
+        for standardized_unit, variants in unit_aliases.items():
+            if unit in variants:
+                unit = standardized_unit
+                break
+
+        # Проверка и преобразование количества
+        quantity = int(quantity)
+        if quantity <= 0:
+            raise ValueError("Количество должно быть больше нуля")
+
+        # Сохранение в БД
+        cursor.execute(
+            "INSERT INTO inventory VALUES (?, ?, ?, ?, ?)",
+            (message.from_user.id, category, name, unit, quantity)
+        )
+        conn.commit()
+
+        await message.answer("✅ Данные успешно сохранены!")
+
+    except Exception as e:
+        error_examples = [
+            "Примеры корректного ввода:",
+            "• Имбирь 350 гр",
+            "• Лимон 1800гр",
+            "• Лайм 6260 гр",
+            "• Белок 2130л",
+            "• Маракуйя 1000 л",
+            "• Взбитые сливки 660 гр"
+        ]
+
+        error_msg = (
+                "❌ Ошибка формата!\n\n"
+                + "\n".join(error_examples) +
+                "\n\n❗ Убедитесь, что:\n"
+                "1. Название не содержит цифр\n"
+                "2. Количество - целое положительное число\n"
+                "3. Единицы измерения: гр/кг/л/шт"
+        )
+
+        await message.answer(error_msg)
+
+@dp.message(F.text == "/start")
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    for category in CATEGORIES:
+        builder.button(text=category, callback_data=f"category_{category}")
+    builder.button(text="📊 Сформировать таблицу", callback_data="generate_excel")
+    builder.adjust(1)
+    await message.answer(
+        "Выберите категорию:",
+        reply_markup=builder.as_markup()
+    )
+
+# Переименуем функцию start в start_command для избежания конфликтов
+@dp.message(F.text == "/start")
+async def start_command(message: types.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    for category in CATEGORIES:
+        builder.button(text=category, callback_data=f"category_{category}")
+    builder.button(text="📊 Сформировать таблицу", callback_data="generate_excel")
+    builder.adjust(1)
+    await message.answer(
+        "Выберите категорию:",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data == "generate_excel")
+async def generate_excel(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cursor.execute(
+        "SELECT category, name, unit, quantity FROM inventory WHERE user_id = ?",
+        (user_id,)
+    )
+    items = cursor.fetchall()
+
+    if not items:
+        return await callback.answer("Нет данных для экспорта!")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Инвентаризация"
+
+    # Создаем заголовки
+    headers = ["Группа", "Наименование", "Ед. изм.", "Остаток фактический"]
+    ws.append(headers)
+
+    # Жирный шрифт для заголовков
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    # Группировка данных
+    data = {}
+    for item in items:
+        category, name, unit, quantity = item
+        if category not in data:
+            data[category] = []
+        data[category].append((name, unit, quantity))
+
+    # Заполняем данные
+    row = 2
+    for category, items_list in data.items():
+        # Записываем категорию
+        ws[f'A{row}'] = category
+        # Записываем элементы категории
+        for name, unit, quantity in items_list:
+            ws[f'B{row}'] = name
+            ws[f'C{row}'] = unit
+            ws[f'D{row}'] = quantity
+            row += 1
+        # Добавляем пустую строку между категориями
+        row += 1
+
+    # Настройка ширины столбцов
+    ws.column_dimensions['A'].width = 35
+    ws.column_dimensions['B'].width = 35
+    ws.column_dimensions['C'].width = 15
+    ws.column_dimensions['D'].width = 20
+
+    filename = f"inventory_{user_id}.xlsx"
+    wb.save(filename)
+
+    with open(filename, "rb") as file:
+        await bot.send_document(
+            chat_id=user_id,
+            document=types.BufferedInputFile(file.read(), filename=filename),
+            caption="Ваша таблица готова!"
+        )
+
+    await callback.answer()
+
+if __name__ == "__main__":
+    print("Бот запущен!")
+    dp.run_polling(bot)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import os
+import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from dotenv import load_dotenv
+from openpyxl import Workbook
+
+load_dotenv("token.env")
+
+bot_token = os.getenv("BOT_TOKEN")
+bot = Bot(token=bot_token)
+dp = Dispatcher()
+
+# Категории
+CATEGORIES = [
+    "БАР - ПРОЧЕЕ товар",
+    "БЕЗАЛКОГОЛЬНЫЕ НАПИТКИ**",
+    "ЧАЙ/КОФЕ товар",
+    "КОНДИТЕРКА/ВЫПЕЧКА",
+    "КОНСЕРВАЦИЯ",
+    "СОУСЫ",
+    "СПЕЦИИ",
+    "СЫПУЧИЕ",
+    "ЧАЙ, КОФЕ",
+    "ЗЕЛЕНЬ",
+    "МОЛОЧНЫЕ ПРОДУКТЫ",
+    "ОВОЩИ СВЕЖИЕ",
+    "ФРУКТЫ",
+    "ЯГОДЫ С/М",
+    "НАПИТКИ БЛ ПФ"
+]
+
+# База данных
+conn = sqlite3.connect("inventory.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS inventory (
+    user_id INTEGER,
+    category TEXT,
+    name TEXT,
+    quantity INTEGER
+)''')
+conn.commit()
+
+class InventoryState(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_item_data = State()
+
+@dp.message(F.text == "/start")
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    for category in CATEGORIES:
+        builder.button(text=category, callback_data=f"category_{category}")
+    builder.button(text="🧹 Очистить данные", callback_data="clear_data")
+    builder.button(text="📊 Сформировать таблицу", callback_data="generate_excel")
+    builder.adjust(1)
+    await message.answer("Выберите категорию:", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "clear_data")
+async def clear_data(callback: types.CallbackQuery):
+    cursor.execute("DELETE FROM inventory WHERE user_id = ?", (callback.from_user.id,))
+    conn.commit()
+    await callback.answer("Данные очищены!✅", show_alert=True)
+
+@dp.callback_query(F.data.startswith("category_"))
+async def select_category(callback: types.CallbackQuery, state: FSMContext):
+    category = callback.data.split("_", 1)[1]
+    await state.update_data(category=category)
+    await state.set_state(InventoryState.waiting_for_item_data)
+    await callback.message.answer(
+        f"Категория: {category}\n"
+        "Введите данные в формате:\n"
+        "<Название> <Количество>\n"
+        "Пример: Ром 5"
+    )
+
+@dp.message(InventoryState.waiting_for_item_data)
+async def process_item_data(message: types.Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        category = data["category"]
+
+        parts = message.text.rsplit(" ", 1)
+        if len(parts) != 2:
+            raise ValueError
+
+        name, quantity = parts[0], int(parts[1])
+
+        # Проверяем, существует ли товар в базе данных
+        cursor.execute(
+            "SELECT quantity FROM inventory WHERE user_id = ? AND category = ? AND name = ?",
+            (message.from_user.id, category, name)
+        )
+        existing_item = cursor.fetchone()
+
+        if existing_item:
+            # Если товар существует, обновляем количество
+            new_quantity = existing_item[0] + quantity
+            cursor.execute(
+                "UPDATE inventory SET quantity = ? WHERE user_id = ? AND category = ? AND name = ?",
+                (new_quantity, message.from_user.id, category, name)
+            )
+        else:
+            # Если товара нет, добавляем новую запись
+            cursor.execute(
+                "INSERT INTO inventory VALUES (?, ?, ?, ?)",
+                (message.from_user.id, category, name, quantity)
+            )
+
+        conn.commit()
+
+        await message.answer("✅ Данные сохранены!")
+        await start(message, state)
+
+    except ValueError:
+        await message.answer("❌ Ошибка формата. Пример: Виски 3")
+
+
+@dp.callback_query(F.data == "generate_excel")
+async def generate_excel(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cursor.execute(
+        "SELECT category, name, quantity FROM inventory WHERE user_id = ?",
+        (user_id,)
+    )
+    items = cursor.fetchall()
+
+    if not items:
+        return await callback.answer("Нет данных для экспорта!", show_alert=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Инвентаризация"
+    ws.append(["Группа", "Наименование", "Количество"])
+
+    data = {}
+    for category, name, qty in items:
+        if category not in data:
+            data[category] = []
+        data[category].append((name, qty))
+
+    for category, items in data.items():
+        ws.append([category, "", ""])
+        for name, qty in items:
+            ws.append(["", name, qty])
+        ws.append([])
+
+    filename = f"inventory_{user_id}.xlsx"
+    wb.save(filename)
+
+    with open(filename, "rb") as file:
+        await bot.send_document(
+            callback.from_user.id,
+            document=types.BufferedInputFile(file.read(), filename=filename),
+            caption="Ваша таблица готова!"
+        )
+
+    await callback.answer()
+
+async def main():
+    # Удаляем вебхук перед запуском
+    await bot.delete_webhook()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    print("Бот запущен!")
+    import asyncio
+    asyncio.run(main())
+
+
+
+
+
+
+
+
+
+
+
+import os
+import sqlite3
+
+import logging
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from dotenv import load_dotenv
+from openpyxl import Workbook
+
+
+load_dotenv("token.env")
+
+bot_token = os.getenv("BOT_TOKEN")
+bot = Bot(token=bot_token)
+dp = Dispatcher()
+
+# Категории
+CATEGORIES = [
+    "БАР - ПРОЧЕЕ товар",
+    "БЕЗАЛКОГОЛЬНЫЕ НАПИТКИ**",
+    "ЧАЙ/КОФЕ товар",
+    "КОНДИТЕРКА/ВЫПЕЧКА",
+    "КОНСЕРВАЦИЯ",
+    "СОУСЫ",
+    "СПЕЦИИ",
+    "СЫПУЧИЕ",
+    "ЧАЙ, КОФЕ",
+    "ЗЕЛЕНЬ",
+    "МОЛОЧНЫЕ ПРОДУКТЫ",
+    "ОВОЩИ СВЕЖИЕ",
+    "ФРУКТЫ",
+    "ЯГОДЫ С/М",
+    "НАПИТКИ БЛ ПФ"
+]
+
+# База данных
+conn = sqlite3.connect("inventory.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS inventory (
+    user_id INTEGER,
+    category TEXT,
+    name TEXT,
+    quantity INTEGER
+)''')
+conn.commit()
+
+class InventoryState(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_item_data = State()
+
+@dp.message(F.text == "/start")
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    for category in CATEGORIES:
+        builder.button(text=category, callback_data=f"category_{category}")
+    builder.button(text="🧹 Очистить данные", callback_data="clear_data")
+    builder.button(text="📊 Сформировать таблицу", callback_data="generate_excel")
+    builder.adjust(1)
+    await message.answer("Выберите категорию:", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "clear_data")
+async def clear_data(callback: types.CallbackQuery):
+    cursor.execute("DELETE FROM inventory WHERE user_id = ?", (callback.from_user.id,))
+    conn.commit()
+    await callback.answer("Данные очищены!✅", show_alert=True)
+
+@dp.callback_query(F.data.startswith("category_"))
+async def select_category(callback: types.CallbackQuery, state: FSMContext):
+    category = callback.data.split("_", 1)[1]
+    await state.update_data(category=category)
+    await state.set_state(InventoryState.waiting_for_item_data)
+    await callback.message.answer(
+        f"Категория: {category}\n"
+        "Введите данные в формате:\n"
+        "<Название> <Количество>\n"
+        "Пример: Ром 5"
+    )
+
+@dp.message(InventoryState.waiting_for_item_data)
+async def process_item_data(message: types.Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        category = data["category"]
+
+        # Разбиваем входящее сообщение на строки
+        items = message.text.strip().split('\n')
+
+        for item in items:
+            parts = item.rsplit(" ", 1)  # Разделяем наименование и количество
+
+            if len(parts) != 2:
+                await message.answer(f"❌ Неверный формат для: {item}. Используйте 'наименование количество'.")
+                continue  # Пропускаем некорректные строки
+
+            name = parts[0].strip()  # Убираем лишние пробелы
+            quantity = int(parts[1])  # Преобразуем количество в целое число
+
+            # Проверяем существование товара
+            cursor.execute(
+                "SELECT quantity FROM inventory WHERE user_id = ? AND category = ? AND name = ?",
+                (message.from_user.id, category, name)
+            )
+            existing_item = cursor.fetchone()
+
+            if existing_item:
+                new_quantity = existing_item[0] + quantity
+                cursor.execute(
+                    "UPDATE inventory SET quantity = ? WHERE user_id = ? AND category = ? AND name = ?",
+                    (new_quantity, message.from_user.id, category, name)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO inventory VALUES (?, ?, ?, ?)",
+                    (message.from_user.id, category, name, quantity)
+                )
+
+        conn.commit()
+        await message.answer("✅ Данные сохранены!")
+        await start(message, state)
+
+    except ValueError as ve:
+        await message.answer(f"❌ Ошибка: {ve}")
+    except Exception as e:
+        logging.error(f"Ошибка: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте снова.")
+
+
+
+
+@dp.callback_query(F.data == "generate_excel")
+async def generate_excel(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cursor.execute(
+        "SELECT category, name, quantity FROM inventory WHERE user_id = ?",
+        (user_id,)
+    )
+    items = cursor.fetchall()
+
+    if not items:
+        return await callback.answer("Нет данных для экспорта!", show_alert=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Инвентаризация"
+    ws.append(["Группа", "Наименование", "Количество"])
+
+    data = {}
+    for category, name, qty in items:
+        if category not in data:
+            data[category] = []
+        data[category].append((name, qty))
+
+    for category, items in data.items():
+        ws.append([category, "", ""])
+        for name, qty in items:
+            ws.append(["", name, qty])
+        ws.append([])
+
+    filename = f"inventory_{user_id}.xlsx"
+    wb.save(filename)
+
+    with open(filename, "rb") as file:
+        await bot.send_document(
+            callback.from_user.id,
+            document=types.BufferedInputFile(file.read(), filename=filename),
+            caption="Ваша таблица готова!"
+        )
+
+    await callback.answer()
+
+async def main():
+    # Удаляем вебхук перед запуском
+    await bot.delete_webhook()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    print("Бот запущен!")
+    import asyncio
+    asyncio.run(main())
+
+
+
+
+import os
+import sqlite3
+import logging
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from dotenv import load_dotenv
+from openpyxl import Workbook
+
+load_dotenv("token.env")
+
+bot_token = os.getenv("BOT_TOKEN")
+bot = Bot(token=bot_token)
+dp = Dispatcher()
+
+# Категории для разных бланков
+BLANKS = {
+    "bar": [
+        "БАР - ПРОЧЕЕ товар",
+        "БЕЗАЛКОГОЛЬНЫЕ НАПИТКИ**",
+        "ЧАЙ/КОФЕ товар",
+        "КОНДИТЕРКА/ВЫПЕЧКА",
+        "КОНСЕРВАЦИЯ",
+        "СОУСЫ",
+        "СПЕЦИИ",
+        "СЫПУЧИЕ",
+        "ЧАЙ, КОФЕ",
+        "ЗЕЛЕНЬ",
+        "МОЛОЧНЫЕ ПРОДУКТЫ",
+        "ОВОЩИ СВЕЖИЕ",
+        "ФРУКТЫ",
+        "ЯГОДЫ С/М",
+        "НАПИТКИ БЛ ПФ"
+    ],
+    "alcohol": [
+        "ВИНО БЕЛОЕ",
+        "ВИНО КРАСНОЕ",
+        "ВИНО ОРАНЖЕВОЕ",
+        "ВЕРМУТ",
+        "ШАМПАНСКОЕ/ИГРИСТОЕ",
+        "ВИСКИ",
+        "ВОДКА",
+        "ГОРЬКИЕ НАСТОЙКИ",
+        "ДЖИН",
+        "КАЛЬВАДОС",
+        "КОНЬЯК/АРМАНЬЯК",
+        "ЛИКЕРЫ",
+        "ПИВО РАЗЛИВНОЕ",
+        "ПОРТВЕЙН",
+        "ПОРТО/ХЕРЕС",
+        "РОМ",
+        "ТЕКИЛА",
+        "ПИВО БУТЫЛКА",
+        "БЕЗАЛКОГОЛЬНОЕ ПИВО"
+    ]
+}
+
+# База данных
+conn = sqlite3.connect("inventory.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS inventory (
+    user_id INTEGER,
+    category TEXT,
+    name TEXT,
+    quantity INTEGER
+)''')
+conn.commit()
+
+class InventoryState(StatesGroup):
+    waiting_for_blank = State()
+    waiting_for_category = State()
+    waiting_for_item_data = State()
+
+# Главное меню
+@dp.message(F.text == "/start")
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🍸 Бланк инвентаризации Бар", callback_data="blank_bar")
+    builder.button(text="🥃 Бланк инвентаризации Алкоголь", callback_data="blank_alcohol")
+    builder.button(text="📊 Сформировать таблицу", callback_data="generate_excel")
+    builder.button(text="🧹 Очистить данные", callback_data="clear_data")
+    builder.adjust(1)
+    await message.answer("Выберите тип инвентаризации:", reply_markup=builder.as_markup())
+
+# Обработчики выбора бланка
+@dp.callback_query(F.data.startswith("blank_"))
+async def select_blank(callback: types.CallbackQuery, state: FSMContext):
+    blank_type = callback.data.split("_")[1]
+    await state.update_data(current_blank=blank_type)
+    await show_categories(callback, blank_type)
+
+async def show_categories(callback: types.CallbackQuery, blank_type: str):
+    categories = BLANKS[blank_type]
+    builder = InlineKeyboardBuilder()
+
+    for category in categories:
+        builder.button(text=category, callback_data=f"category_{category}")
+
+    builder.button(text="🔙 Назад", callback_data="back_to_main")
+    builder.adjust(1)
+
+    # Проверяем текущее содержимое сообщения
+    current_text = callback.message.text
+    new_text = f"Выберите категорию ({'Бар' if blank_type == 'bar' else 'Алкоголь'}):"
+
+    # Если текущее содержимое не совпадает с новым, обновляем сообщение
+    if current_text != new_text or callback.message.reply_markup != builder.as_markup():
+        await callback.message.edit_text(
+            new_text,
+            reply_markup=builder.as_markup()
+        )
+
+
+# Назад в главное меню
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
+    await start(callback.message, state)
+
+# Очистка данных
+@dp.callback_query(F.data == "clear_data")
+async def clear_data(callback: types.CallbackQuery):
+    cursor.execute("DELETE FROM inventory WHERE user_id = ?", (callback.from_user.id,))
+    conn.commit()
+    await callback.answer("Данные очищены!✅", show_alert=True)
+
+# Выбор категории
+@dp.callback_query(F.data.startswith("category_"))
+async def select_category(callback: types.CallbackQuery, state: FSMContext):
+    category = callback.data.split("_", 1)[1]
+    await state.update_data(category=category)
+    await state.set_state(InventoryState.waiting_for_item_data)
+    await callback.message.answer(
+        f"Категория: {category}\n"
+        "Введите данные в формате:\n"
+        "<Название> <Количество>\n"
+        "Пример: Ром 5"
+    )
+    # Сохраняем callback в состоянии
+    await state.update_data(callback=callback)
+
+
+# Обработка ввода данных
+@dp.message(InventoryState.waiting_for_item_data)
+async def process_item_data(message: types.Message, state: FSMContext):
+    try:
+        data = await state.get_data()
+        category = data["category"]
+        blank_type = data.get("current_blank", "bar")
+
+        # Получаем callback из состояния
+        callback = data.get("callback")
+
+        items = message.text.strip().split('\n')
+        for item in items:
+            parts = item.rsplit(" ", 1)
+            if len(parts) != 2:
+                await message.answer(f"❌ Неверный формат для: '{item}'. Используйте 'наименование количество'.")
+                continue  # Пропускаем некорректные строки
+
+            name = parts[0].strip()
+            try:
+                quantity = int(parts[1])  # Преобразуем количество в целое число
+            except ValueError:
+                await message.answer(f"❌ Неверное количество для: '{item}'. Должно быть числом.")
+                continue  # Пропускаем некорректные строки
+
+            # Проверяем существование товара
+            cursor.execute(
+                "SELECT quantity FROM inventory WHERE user_id = ? AND category = ? AND name = ?",
+                (message.from_user.id, category, name)
+            )
+            existing_item = cursor.fetchone()
+
+            if existing_item:
+                new_quantity = existing_item[0] + quantity
+                cursor.execute(
+                    "UPDATE inventory SET quantity = ? WHERE user_id = ? AND category = ? AND name = ?",
+                    (new_quantity, message.from_user.id, category, name)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO inventory VALUES (?, ?, ?, ?)",
+                    (message.from_user.id, category, name, quantity)
+                )
+
+        conn.commit()
+        await message.answer("✅ Данные сохранены!")
+
+        # Здесь вызов show_categories с правильным объектом
+        await show_categories(callback, blank_type)
+
+    except Exception as e:
+        logging.error(f"Ошибка при обработке данных: {e}")
+        await message.answer(f"❌ Произошла ошибка: {str(e)}. Попробуйте снова.")
+
+
+
+
+
+# Генерация Excel
+@dp.callback_query(F.data == "generate_excel")
+async def generate_excel(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cursor.execute(
+        "SELECT category, name, quantity FROM inventory WHERE user_id = ?",
+        (user_id,)
+    )
+    items = cursor.fetchall()
+
+    if not items:
+        return await callback.answer("Нет данных для экспорта!", show_alert=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Инвентаризация"
+    ws.append(["Группа", "Наименование", "Количество"])
+
+    # Группировка и объединение ячеек
+    data = {}
+    for category, name, qty in items:
+        data.setdefault(category, []).append((name, qty))
+
+    row_index = 2
+    for category, items in data.items():
+        start_row = row_index
+        for name, qty in items:
+            ws.append([category if row_index == start_row else "", name, qty])
+            row_index += 1
+        ws.merge_cells(start_row=start_row, end_row=row_index-1, start_column=1, end_column=1)
+
+    # Настройка ширины столбцов
+    ws.column_dimensions['A'].width = 35
+    ws.column_dimensions['B'].width = 35
+    ws.column_dimensions['C'].width = 15
+
+    filename = f"inventory_{user_id}.xlsx"
+    wb.save(filename)
+
+    with open(filename, "rb") as file:
+        await bot.send_document(
+            callback.from_user.id,
+            document=types.BufferedInputFile(file.read(), filename=filename),
+            caption="Ваша таблица готова!"
+        )
+
+    await callback.answer()
+
+async def main():
+    await bot.delete_webhook()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    print("Бот запущен!")
+    import asyncio
+    asyncio.run(main())
