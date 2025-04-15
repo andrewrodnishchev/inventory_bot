@@ -419,6 +419,10 @@ def main():
     return app
 
 app = main()
+app = web.Application()
+webhook_handler = SimpleRequestHandler(dp, bot=bot)
+webhook_handler.register(app, path="/webhook")
+setup_application(app, dp, bot=bot)
 
 # Для запуска через Gunicorn
 if __name__ == "__main__":
