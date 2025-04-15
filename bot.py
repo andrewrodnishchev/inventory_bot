@@ -2,7 +2,7 @@ import os
 import sqlite3
 import logging
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F, Router
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -11,13 +11,15 @@ from aiohttp import web
 from dotenv import load_dotenv
 from openpyxl import Workbook
 
+# Загрузка переменных окружения
 load_dotenv("token.env")
-
 bot_token = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 10000))
+
+# Инициализация бота и диспетчера
 bot = Bot(token=bot_token)
 dp = Dispatcher()
-router = Router()
-dp.include_router(router)
 
 # Категории для разных бланков
 BLANKS = {
@@ -386,24 +388,36 @@ async def delete_cancel(callback: types.CallbackQuery):
     await callback.message.edit_text("❌ Удаление отменено.")
     await callback.answer()
 
-async def on_startup(bot: Bot) -> None:
+async def on_startup(bot: Bot):
     await bot.set_webhook(WEBHOOK_URL)
 
-async def on_shutdown(bot: Bot) -> None:
+async def on_shutdown(bot: Bot):
     await bot.delete_webhook()
 
-def main():
-    app = web.Application()
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(app, path="/webhook")
-    setup_application(app, dp, bot=bot)
-    web.run_app(app, host="0.0.0.0", port=PORT)
+# Создаем aiohttp приложение
+app = web.Application()
 
-if __name__ == "__main__":
+# Регистрируем обработчик вебхуков
+webhook_handler = SimpleRequestHandler(
+    dispatcher=dp,
+    bot=bot,
+)
+webhook_handler.register(app, path="/webhook")
+
+# Настройка приложения для работы с Gunicorn
+def main():
+    # Настройка логирования
     logging.basicConfig(level=logging.INFO)
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    PORT = int(os.getenv("PORT", 10000))
-    main()
+
+    # Подключение обработчиков старта/остановки
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+
+    # Настройка приложения aiogram
+    setup_application(app, dp, bot=bot)
+
+    return app
+
+# Для запуска через Gunicorn
+if __name__ == "__main__":
+    web.run_app(main(), host="0.0.0.0", port=PORT)
