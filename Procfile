@@ -1,1 +1,1 @@
-web: gunicorn main:main --worker-class aiohttp.GunicornWebWorker --preload
+web: gunicorn main:main --worker-class aiohttp.worker.GunicornWebWorker --bind=0.0.0.0:$PORT
