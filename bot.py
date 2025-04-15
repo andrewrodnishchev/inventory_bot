@@ -394,37 +394,24 @@ async def on_startup(bot: Bot):
 async def on_shutdown(bot: Bot):
     await bot.delete_webhook()
 
-# Создаем aiohttp приложение
+# Создаем app ОДИН РАЗ
 app = web.Application()
 
-# Регистрируем обработчик вебхуков
-webhook_handler = SimpleRequestHandler(
-    dispatcher=dp,
-    bot=bot,
-)
-webhook_handler.register(app, path="/webhook")
-
-# Настройка приложения для работы с Gunicorn
-def main():
-    # Настройка логирования
-    logging.basicConfig(level=logging.INFO)
-
-    # Подключение обработчиков старта/остановки
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
-    # Настройка приложения aiogram
-    setup_application(app, dp, bot=bot)
-
-    return app
-
-app = main()
-app = web.Application()
+# Регистрируем обработчики вебхуков
 webhook_handler = SimpleRequestHandler(dp, bot=bot)
 webhook_handler.register(app, path="/webhook")
-setup_application(app, dp, bot=bot)
 
-# Для запуска через Gunicorn
-if __name__ == "__main__":
+# Настройка приложения
+def setup_app():
     logging.basicConfig(level=logging.INFO)
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    setup_application(app, dp, bot=bot)
+    return app
+
+# Инициализация
+app = setup_app()
+
+# Для запуска через Gunicorn/локально
+if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=PORT)
