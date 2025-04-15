@@ -418,6 +418,9 @@ def main():
 
     return app
 
+app = main()
+
 # Для запуска через Gunicorn
 if __name__ == "__main__":
-    web.run_app(main(), host="0.0.0.0", port=PORT)
+    logging.basicConfig(level=logging.INFO)
+    web.run_app(app, host="0.0.0.0", port=PORT)
