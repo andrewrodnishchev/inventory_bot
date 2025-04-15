@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "inventory-bot"
+version = "0.1.0"
+description = "Telegram Inventory Bot"
+authors = ["Your Name <your@email.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+aiogram = "^3.20"
+python-dotenv = "^1.0"
+openpyxl = "^3.1"
+aiohttp = "^3.8"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

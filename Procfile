@@ -1,1 +1,1 @@
-web: gunicorn main:main --worker-class aiohttp.GunicornWebWorker
+web: gunicorn main:main --worker-class aiohttp.GunicornWebWorker --preload
