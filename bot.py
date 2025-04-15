@@ -1,12 +1,13 @@
 import os
 import sqlite3
 import logging
-import asyncio
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from dotenv import load_dotenv
 from openpyxl import Workbook
 
@@ -15,6 +16,8 @@ load_dotenv("token.env")
 bot_token = os.getenv("BOT_TOKEN")
 bot = Bot(token=bot_token)
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 
 # Категории для разных бланков
 BLANKS = {
@@ -383,10 +386,24 @@ async def delete_cancel(callback: types.CallbackQuery):
     await callback.message.edit_text("❌ Удаление отменено.")
     await callback.answer()
 
-async def main():
+async def on_startup(bot: Bot) -> None:
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown(bot: Bot) -> None:
     await bot.delete_webhook()
-    await dp.start_polling(bot)
+
+def main():
+    app = web.Application()
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path="/webhook")
+    setup_application(app, dp, bot=bot)
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    print("Бот запущен!")
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO)
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    PORT = int(os.getenv("PORT", 10000))
+    main()
